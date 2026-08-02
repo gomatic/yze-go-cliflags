@@ -71,12 +71,33 @@ func hasExternalPrefix(name envName) bool {
 // app prefix — the KILROY_PGHOST shape the standard forbids, because libpq
 // already owns PGHOST and will never read the prefixed spelling.
 func prefixedExternal(name envName) (externalPrefix, bool) {
+	segments := strings.Split(string(name), "_")
 	for _, namespace := range externals() {
-		if strings.Contains(string(name), "_"+string(namespace)) {
+		if wrapsNamespace(segments, namespace) {
 			return namespace, true
 		}
 	}
 	return "", false
+}
+
+// wrapsNamespace reports whether a NON-LEADING segment matches the namespace's
+// own shape. An underscore-terminated namespace (AWS_) matches a bare segment
+// equal to its stem with more segments following (KILROY_AWS_REGION); a bare
+// namespace (PG) matches only a FINAL segment extending it (KILROY_PGHOST),
+// because libpq spells its variables as one segment — so MYAPP_PGP_KEY is an
+// app variable, not a wrapped libpq one.
+func wrapsNamespace(segments []string, namespace externalPrefix) bool {
+	stem := strings.TrimSuffix(string(namespace), "_")
+	terminated := strings.HasSuffix(string(namespace), "_")
+	for i := 1; i < len(segments); i++ {
+		if terminated && segments[i] == stem && i+1 < len(segments) {
+			return true
+		}
+		if !terminated && i == len(segments)-1 && segments[i] != stem && strings.HasPrefix(segments[i], stem) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkAppPrefix reports an app-specific variable missing the app-name prefix.

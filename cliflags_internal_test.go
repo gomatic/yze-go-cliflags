@@ -35,6 +35,24 @@ func TestFlagTypeRecognizesOnlyTheFrameworkFlagBase(t *testing.T) {
 	want.False(isBool, "a FlagBase without type arguments defaults to non-boolean")
 }
 
+// TestStructFlagTypeDemandsAStructWithAValueField pins the non-generic flag
+// classifier's guards: a framework interface (RequiredFlag) and a Flag-named
+// struct WITHOUT a Value field are not literal-built flags.
+func TestStructFlagTypeDemandsAStructWithAValueField(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	framework := types.NewPackage(cliPackage, "cli")
+
+	iface := types.NewNamed(types.NewTypeName(0, framework, "RequiredFlag", nil), types.NewInterfaceType(nil, nil), nil)
+	isFlag, _ := flagType(iface)
+	want.False(isFlag, "a framework interface is not a flag literal type")
+
+	bare := types.NewNamed(types.NewTypeName(0, framework, "OddFlag", nil), types.NewStruct(nil, nil), nil)
+	isFlag, _ = flagType(bare)
+	want.False(isFlag, "a Flag-named struct without a Value field is not a flag")
+}
+
 // TestExternalsExtendsTheDefaults pins the -external parsing: the defaults are
 // always present, additions append, and empty segments are ignored.
 func TestExternalsExtendsTheDefaults(t *testing.T) {

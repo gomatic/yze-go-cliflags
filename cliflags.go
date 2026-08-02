@@ -122,41 +122,6 @@ func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
 	checkRequired(pass, fields, name)
 }
 
-// flagType reports whether t is a urfave/cli v3 flag type, and whether the
-// flag's value type has a zero value that IS its sensible default. v3 spells
-// StringFlag/BoolFlag/... as aliases of the generic FlagBase, so the unaliased
-// type is a FlagBase instantiation and the first type argument is the value
-// type.
-func flagType(t types.Type) (isFlag, hasZeroDefault bool) {
-	named, ok := types.Unalias(t).(*types.Named)
-	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != cliPackage {
-		return false, false
-	}
-	if named.Obj().Name() != "FlagBase" {
-		return false, false
-	}
-	return true, isZeroDefaultArgument(named)
-}
-
-// isZeroDefaultArgument reports whether the FlagBase instantiation's value
-// type carries its sensible default in its zero value: a boolean (false) or a
-// slice (empty) — the standard's own BoolFlag example omits Value, and its
-// slice guidance sets no Value either.
-func isZeroDefaultArgument(named *types.Named) bool {
-	arguments := named.TypeArgs()
-	if arguments == nil || arguments.Len() == 0 {
-		return false
-	}
-	switch types.Unalias(arguments.At(0)).(type) {
-	case *types.Slice:
-		return true
-	case *types.Basic:
-		basic, _ := types.Unalias(arguments.At(0)).(*types.Basic)
-		return basic.Kind() == types.Bool
-	}
-	return false
-}
-
 // isKeyed reports whether every element of lit is a keyed field.
 func isKeyed(lit *ast.CompositeLit) bool {
 	for _, elt := range lit.Elts {
@@ -220,42 +185,59 @@ func checkName(pass *analysis.Pass, fields fieldMap, name flagName) {
 }
 
 // checkSources reports a flag that binds no environment variable, and checks
-// the names it does bind. A Sources field without a cli.EnvVars(...) call — or
-// with an empty one — binds nothing.
+// every name it does bind. A Sources field with no cli.EnvVars(...) or
+// cli.EnvVar(...) call — or only empty ones — binds nothing.
 func checkSources(pass *analysis.Pass, lit *ast.CompositeLit, fields fieldMap, name flagName) {
-	call := envVarsCall(pass, fields["Sources"])
-	if call == nil || len(call.Args) == 0 {
+	calls := envVarCalls(pass, fields["Sources"])
+	if !bindsEnv(calls) {
 		pass.Reportf(lit.Pos(), messageSources, name)
 		return
 	}
-	checkEnvNames(pass, call)
+	for _, call := range calls {
+		checkEnvNames(pass, call)
+	}
 }
 
-// envVarsCall finds the cli.EnvVars call within the Sources field's value, or
-// nil when the field is absent or wires no environment source.
-func envVarsCall(pass *analysis.Pass, kv *ast.KeyValueExpr) *ast.CallExpr {
+// envVarCalls finds every cli.EnvVars/cli.EnvVar call within the Sources
+// field's value; empty when the field is absent or wires no environment
+// source.
+func envVarCalls(pass *analysis.Pass, kv *ast.KeyValueExpr) []*ast.CallExpr {
 	if kv == nil {
 		return nil
 	}
-	var found *ast.CallExpr
+	var found []*ast.CallExpr
 	ast.Inspect(kv.Value, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if ok && found == nil && isEnvVarsFunc(pass, call.Fun) {
-			found = call
+		if call, ok := node.(*ast.CallExpr); ok && isEnvVarFunc(pass, call.Fun) {
+			found = append(found, call)
 		}
-		return found == nil
+		return true
 	})
 	return found
 }
 
-// isEnvVarsFunc reports whether fun resolves to urfave/cli v3's EnvVars.
-func isEnvVarsFunc(pass *analysis.Pass, fun ast.Expr) bool {
+// bindsEnv reports whether any found call names at least one variable.
+func bindsEnv(calls []*ast.CallExpr) bool {
+	for _, call := range calls {
+		if len(call.Args) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// isEnvVarFunc reports whether fun resolves to urfave/cli v3's EnvVars (the
+// chain form) or EnvVar (the single-source form used inside
+// cli.NewValueSourceChain) — both are first-class upstream bindings.
+func isEnvVarFunc(pass *analysis.Pass, fun ast.Expr) bool {
 	sel, ok := fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
 	obj, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
-	return ok && obj.Name() == "EnvVars" && obj.Pkg() != nil && obj.Pkg().Path() == cliPackage
+	if !ok || obj.Pkg() == nil || obj.Pkg().Path() != cliPackage {
+		return false
+	}
+	return obj.Name() == "EnvVars" || obj.Name() == "EnvVar"
 }
 
 // checkValue reports a flag with no Value default. The caller exempts value

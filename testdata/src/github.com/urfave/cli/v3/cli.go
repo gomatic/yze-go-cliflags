@@ -12,6 +12,33 @@ func EnvVars(names ...string) ValueSourceChain { return ValueSourceChain{names: 
 // Files is a non-environment source, for the Sources-without-EnvVars fixture.
 func Files(paths ...string) ValueSourceChain { return ValueSourceChain{names: paths} }
 
+// ValueSource is one source in a chain.
+type ValueSource struct{ name string }
+
+// EnvVar is the single-variable environment source.
+func EnvVar(key string) ValueSource { return ValueSource{name: key} }
+
+// NewValueSourceChain assembles a chain from single sources.
+func NewValueSourceChain(src ...ValueSource) ValueSourceChain {
+	names := make([]string, 0, len(src))
+	for _, s := range src {
+		names = append(names, s.name)
+	}
+	return ValueSourceChain{names: names}
+}
+
+// BoolWithInverseFlag mirrors the framework's non-generic flag struct: no
+// FlagBase alias, its own fields, a bool Value.
+type BoolWithInverseFlag struct {
+	Name        string
+	Aliases     []string
+	Usage       string
+	Value       bool
+	Required    bool
+	Sources     ValueSourceChain
+	Destination *bool
+}
+
 // FlagBase mirrors the generic base every v3 flag type aliases.
 type FlagBase[T any, C any, VC any] struct {
 	Name        string

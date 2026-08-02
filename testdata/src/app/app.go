@@ -23,9 +23,10 @@ func Command() *cli.Command {
 		Name: "app",
 		Flags: []cli.Flag{
 			good(), goodBool(), goodInt(), goodSlice(), goodDuration(),
-			noSources(), fileSources(), emptyEnvVars(), positional(), wrapped(),
+			noSources(), fileSources(), emptyEnvVars(), positional(), wrapped(), methodWrapped(),
 			noValue(), camelName(), required(), requiredNonConstant(),
 			prefixedExternal(), lowerSnake(), constantEnv(), dynamic(), nameless(),
+			inverse(), singularEnv(), pgpKey(), prefixedAWS(),
 		},
 	}
 }
@@ -115,6 +116,22 @@ func positional() cli.Flag {
 // chain hides the EnvVars call behind a local wrapper.
 func chain(names ...string) cli.ValueSourceChain { return cli.EnvVars(names...) }
 
+// builder hides the binding behind a method, exercising the selector that
+// resolves outside the framework package.
+type builder struct{}
+
+func (builder) chain(names ...string) cli.ValueSourceChain { return cli.EnvVars(names...) }
+
+// methodWrapped binds through a method call: invisible at the literal, like
+// any local wrapper.
+func methodWrapped() cli.Flag {
+	return &cli.StringFlag{ // want `must bind an environment variable`
+		Name:    "method-wrapped",
+		Value:   "x",
+		Sources: builder{}.chain("MYAPP_METHOD"),
+	}
+}
+
 // wrapped binds through the local wrapper: the binding is invisible at the
 // literal, so the flag does not visibly satisfy the standard — write the
 // cli.EnvVars call in the literal.
@@ -198,6 +215,44 @@ func nameless() cli.Flag {
 	return &cli.StringFlag{
 		Value:   "x",
 		Sources: cli.EnvVars("MYAPP_NAMELESS"),
+	}
+}
+
+// inverse is the framework's non-generic flag struct: every rule applies to it
+// exactly as to the FlagBase aliases — no opt-out by flag type.
+func inverse() cli.Flag {
+	return &cli.BoolWithInverseFlag{ // want `must bind an environment variable`
+		Name:     "dryRun", // want `must be kebab-case`
+		Required: true,     // want `must not be Required`
+	}
+}
+
+// singularEnv binds through the equally-first-class cli.EnvVar single-source
+// form inside cli.NewValueSourceChain; the binding is real and silent.
+func singularEnv() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "db-port",
+		Value:   "5432",
+		Sources: cli.NewValueSourceChain(cli.EnvVar("PGPORT")),
+	}
+}
+
+// pgpKey is an app variable whose middle segment merely starts with a
+// namespace stem: PGP is not libpq's namespace, so nothing is reported.
+func pgpKey() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "signing-key",
+		Value:   "",
+		Sources: cli.EnvVars("MYAPP_PGP_KEY"),
+	}
+}
+
+// prefixedAWS wraps an underscore-terminated namespace under an app prefix.
+func prefixedAWS() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "region",
+		Value:   "us-east-1",
+		Sources: cli.EnvVars("KILROY_AWS_REGION"), // want `use the external name unprefixed`
 	}
 }
 
