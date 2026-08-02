@@ -22,7 +22,7 @@ func Command() *cli.Command {
 	return &cli.Command{
 		Name: "app",
 		Flags: []cli.Flag{
-			good(), goodBool(), goodInt(),
+			good(), goodBool(), goodInt(), goodSlice(), goodDuration(),
 			noSources(), fileSources(), emptyEnvVars(), positional(), wrapped(),
 			noValue(), camelName(), required(), requiredNonConstant(),
 			prefixedExternal(), lowerSnake(), constantEnv(), dynamic(), nameless(),
@@ -49,12 +49,31 @@ func goodBool() cli.Flag {
 	}
 }
 
+// goodSlice omits Value: a slice's zero value — empty — is its sensible
+// default, like a boolean's false.
+func goodSlice() cli.Flag {
+	return &cli.StringSliceFlag{
+		Name:    "tags",
+		Sources: cli.EnvVars("MYAPP_TAGS"),
+	}
+}
+
 // goodInt binds several app variables at once; all are checked, none report.
 func goodInt() cli.Flag {
 	return &cli.IntFlag{
 		Name:    "max-records",
 		Value:   1000,
 		Sources: cli.EnvVars("JSONL_MAX_RECORDS", "MYAPP_DSN"),
+	}
+}
+
+// goodDuration has a named (non-basic, non-slice) value type, whose zero is
+// NOT presumed a sensible default — so it carries an explicit Value.
+func goodDuration() cli.Flag {
+	return &cli.DurationFlag{
+		Name:    "shutdown-timeout",
+		Value:   cli.Duration(30),
+		Sources: cli.EnvVars("MYAPP_SHUTDOWN_TIMEOUT"),
 	}
 }
 

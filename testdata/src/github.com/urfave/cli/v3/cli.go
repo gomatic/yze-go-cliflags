@@ -25,20 +25,35 @@ type FlagBase[T any, C any, VC any] struct {
 
 // Per-type configs and value creators, as in the real module.
 type (
-	StringConfig struct{}
-	BoolConfig   struct{}
-	IntConfig    struct{}
-	stringValue  struct{}
-	boolValue    struct{}
-	intValue     struct{}
+	StringConfig      struct{}
+	BoolConfig        struct{}
+	IntConfig         struct{}
+	StringSliceConfig struct{}
+	stringValue       struct{}
+	boolValue         struct{}
+	intValue          struct{}
+	stringSliceValue  struct{}
 )
 
 // The flag aliases the fixtures use.
 type (
-	StringFlag = FlagBase[string, StringConfig, stringValue]
-	BoolFlag   = FlagBase[bool, BoolConfig, boolValue]
-	IntFlag    = FlagBase[int, IntConfig, intValue]
+	StringFlag      = FlagBase[string, StringConfig, stringValue]
+	BoolFlag        = FlagBase[bool, BoolConfig, boolValue]
+	IntFlag         = FlagBase[int, IntConfig, intValue]
+	StringSliceFlag = FlagBase[[]string, StringSliceConfig, stringSliceValue]
 )
+
+// Duration mirrors a named non-basic value type (the real module uses
+// time.Duration).
+type Duration int64
+
+type (
+	NoConfig      struct{}
+	durationValue struct{}
+)
+
+// DurationFlag is the alias whose value type is a named type, not a basic one.
+type DurationFlag = FlagBase[Duration, NoConfig, durationValue]
 
 // Flag is the v3 flag interface stand-in.
 type Flag any

@@ -3,7 +3,8 @@
 // is one line of the go-cli standard:
 //
 //   - every flag binds an environment variable via Sources: cli.EnvVars(...)
-//   - every non-boolean flag carries a sensible default via Value
+//   - every flag whose zero value is not its sensible default (i.e. all but
+//     booleans and slices) carries an explicit default via Value
 //   - flag names are kebab-case
 //   - an app-specific environment variable is UPPERCASE_SNAKE_CASE (prefixed
 //     with the app name when -app is set), while a well-known external
@@ -107,7 +108,7 @@ func run(pass *analysis.Pass) (any, error) {
 // is meaningless there, and vet's composites check already forbids unkeyed
 // literals of another module's structs.
 func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
-	isFlag, isBool := flagType(pass.TypesInfo.TypeOf(lit))
+	isFlag, hasZeroDefault := flagType(pass.TypesInfo.TypeOf(lit))
 	if !isFlag || !isKeyed(lit) {
 		return
 	}
@@ -115,17 +116,18 @@ func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
 	name := nameOf(pass, fields)
 	checkName(pass, fields, name)
 	checkSources(pass, lit, fields, name)
-	if !isBool {
+	if !hasZeroDefault {
 		checkValue(pass, lit, fields, name)
 	}
 	checkRequired(pass, fields, name)
 }
 
 // flagType reports whether t is a urfave/cli v3 flag type, and whether the
-// flag's value type is bool. v3 spells StringFlag/BoolFlag/... as aliases of
-// the generic FlagBase, so the unaliased type is a FlagBase instantiation and
-// the first type argument is the value type.
-func flagType(t types.Type) (isFlag, isBool bool) {
+// flag's value type has a zero value that IS its sensible default. v3 spells
+// StringFlag/BoolFlag/... as aliases of the generic FlagBase, so the unaliased
+// type is a FlagBase instantiation and the first type argument is the value
+// type.
+func flagType(t types.Type) (isFlag, hasZeroDefault bool) {
 	named, ok := types.Unalias(t).(*types.Named)
 	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != cliPackage {
 		return false, false
@@ -133,17 +135,26 @@ func flagType(t types.Type) (isFlag, isBool bool) {
 	if named.Obj().Name() != "FlagBase" {
 		return false, false
 	}
-	return true, isBoolArgument(named)
+	return true, isZeroDefaultArgument(named)
 }
 
-// isBoolArgument reports whether the FlagBase instantiation's value type is bool.
-func isBoolArgument(named *types.Named) bool {
+// isZeroDefaultArgument reports whether the FlagBase instantiation's value
+// type carries its sensible default in its zero value: a boolean (false) or a
+// slice (empty) — the standard's own BoolFlag example omits Value, and its
+// slice guidance sets no Value either.
+func isZeroDefaultArgument(named *types.Named) bool {
 	arguments := named.TypeArgs()
 	if arguments == nil || arguments.Len() == 0 {
 		return false
 	}
-	basic, ok := types.Unalias(arguments.At(0)).(*types.Basic)
-	return ok && basic.Kind() == types.Bool
+	switch types.Unalias(arguments.At(0)).(type) {
+	case *types.Slice:
+		return true
+	case *types.Basic:
+		basic, _ := types.Unalias(arguments.At(0)).(*types.Basic)
+		return basic.Kind() == types.Bool
+	}
+	return false
 }
 
 // isKeyed reports whether every element of lit is a keyed field.
@@ -247,9 +258,8 @@ func isEnvVarsFunc(pass *analysis.Pass, fun ast.Expr) bool {
 	return ok && obj.Name() == "EnvVars" && obj.Pkg() != nil && obj.Pkg().Path() == cliPackage
 }
 
-// checkValue reports a flag with no Value default. The caller exempts
-// booleans: a boolean's zero value IS its sensible default — the standard's
-// own BoolFlag example omits Value.
+// checkValue reports a flag with no Value default. The caller exempts value
+// types whose zero IS the sensible default (booleans, slices).
 func checkValue(pass *analysis.Pass, lit *ast.CompositeLit, fields fieldMap, name flagName) {
 	if fields["Value"] == nil {
 		pass.Reportf(lit.Pos(), messageValue, name)
