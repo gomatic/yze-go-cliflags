@@ -38,6 +38,7 @@ const (
 	messageSnake     = "environment variable %q must be UPPERCASE_SNAKE_CASE"
 	messagePrefixed  = "environment variable %q prefixes the well-known external namespace %s — use the external name unprefixed"
 	messageAppPrefix = "app-specific environment variable %q must be prefixed %q"
+	messageMetaEnv   = "flag %q overrides cli.VersionFlag/cli.HelpFlag — an env binding there is inert (urfave's version/help checks run before Sources apply) yet advertised in help output; remove it"
 )
 
 // cliPackage is the import path of the sanctioned CLI framework.
@@ -93,9 +94,10 @@ var Registration = goyze.Registration{
 // run inspects every composite literal for the flag rules.
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
+		meta := metaFlagLiterals(pass, file)
 		ast.Inspect(file, func(node ast.Node) bool {
 			if lit, ok := node.(*ast.CompositeLit); ok {
-				checkFlagLiteral(pass, lit)
+				checkFlagLiteral(pass, lit, meta)
 			}
 			return true
 		})
@@ -106,8 +108,9 @@ func run(pass *analysis.Pass) (any, error) {
 // checkFlagLiteral applies every flag rule to one v3 flag literal. An unkeyed
 // literal is skipped: it specifies every field positionally, so "field absent"
 // is meaningless there, and vet's composites check already forbids unkeyed
-// literals of another module's structs.
-func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
+// literals of another module's structs. A meta-flag override (a member of
+// meta) inverts the env rule: Sources are forbidden there instead of required.
+func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit, meta metaLiterals) {
 	isFlag, hasZeroDefault := flagType(pass.TypesInfo.TypeOf(lit))
 	if !isFlag || !isKeyed(lit) {
 		return
@@ -115,7 +118,11 @@ func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
 	fields := collectFields(lit)
 	name := nameOf(pass, fields)
 	checkName(pass, fields, name)
-	checkSources(pass, lit, fields, name)
+	if meta[lit] {
+		checkMetaSources(pass, lit, fields, name)
+	} else {
+		checkSources(pass, lit, fields, name)
+	}
 	if !hasZeroDefault {
 		checkValue(pass, lit, fields, name)
 	}

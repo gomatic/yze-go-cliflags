@@ -85,6 +85,13 @@ type DurationFlag = FlagBase[Duration, NoConfig, durationValue]
 // Flag is the v3 flag interface stand-in.
 type Flag any
 
+// VersionFlag and HelpFlag mirror the package-level meta-flag variables an app
+// may override (the real module prints version/help when they are set).
+var (
+	VersionFlag Flag
+	HelpFlag    Flag
+)
+
 // Command is a stand-in for the v3 Command type.
 type Command struct {
 	Name  string

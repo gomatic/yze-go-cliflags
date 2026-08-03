@@ -265,3 +265,33 @@ func dynamic() cli.Flag {
 		Sources: cli.EnvVars(dynamicEnv),
 	}
 }
+
+// configureMeta overrides the framework's meta-flags. The unbound override is
+// the conformant shape — the Sources requirement is exempt there. The bound
+// ones are defects: urfave's version/help checks run before Sources apply, so
+// each binding is inert yet advertised in help output.
+func configureMeta() {
+	cli.VersionFlag = &cli.BoolFlag{Name: "version", Usage: "print version information and exit"}
+	cli.VersionFlag = &cli.BoolFlag{ // want `flag "version" overrides cli.VersionFlag/cli.HelpFlag`
+		Name:    "version",
+		Sources: cli.EnvVars("APP_VERSION"),
+	}
+	cli.HelpFlag = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+		Name:    "help",
+		Sources: cli.EnvVars("APP_HELP"),
+	}
+}
+
+// holder proves a selector target outside the framework is not a meta-flag
+// override: the ordinary rules stay in force.
+type holder struct{ flag cli.Flag }
+
+// metaLookalikes assigns through selectors that are NOT cli.VersionFlag or
+// cli.HelpFlag — a local struct field and a framework field that is no
+// meta-flag variable — so both stay on the ordinary (conformant here) rules.
+func metaLookalikes(cmd *cli.Command) {
+	var h holder
+	h.flag = &cli.BoolFlag{Name: "held", Sources: cli.EnvVars("APP_HELD")}
+	_ = h
+	cmd.Flags = []cli.Flag{&cli.BoolFlag{Name: "listed", Sources: cli.EnvVars("APP_LISTED")}}
+}
