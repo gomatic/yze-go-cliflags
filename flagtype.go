@@ -17,6 +17,12 @@ import (
 // argument is the value type) — but also ships non-generic flag structs
 // (BoolWithInverseFlag), which are classified by their Value field instead.
 func flagType(t types.Type) (isFlag, hasZeroDefault bool) {
+	if pointer, ok := types.Unalias(t).(*types.Pointer); ok {
+		// An elided element of a []*cli.XFlag composite types as *cli.XFlag —
+		// the & is implied — so the pointer is unwrapped to judge those
+		// literals exactly like the spelled-out &cli.XFlag{...} form.
+		t = pointer.Elem()
+	}
 	named, ok := types.Unalias(t).(*types.Named)
 	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != cliPackage {
 		return false, false

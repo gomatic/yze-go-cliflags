@@ -282,6 +282,79 @@ func configureMeta() {
 	}
 }
 
+// configureMetaIndirect overrides the meta-flags through function-local
+// variables: resolution follows a single := or var binding to its &lit, so the
+// clean override stays silent (the ordinary Sources rule must NOT fire) and
+// the env-bound override is reported exactly like the direct form.
+func configureMetaIndirect() {
+	clean := &cli.BoolFlag{Name: "version", Usage: "print version information and exit"}
+	cli.VersionFlag = clean
+
+	var bound = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+		Name:    "help",
+		Sources: cli.EnvVars("APP_HELP_INDIRECT"),
+	}
+	cli.HelpFlag = bound
+}
+
+// configureMetaDeclaredThenAssigned binds through a declared-then-assigned
+// variable: the declaration writes nothing, so the later = is the single write
+// and still resolves.
+func configureMetaDeclaredThenAssigned() {
+	var bound *cli.BoolFlag
+	bound = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+		Name:    "help",
+		Sources: cli.EnvVars("APP_HELP_DECLARED"),
+	}
+	cli.HelpFlag = bound
+}
+
+// configureMetaReassigned writes the variable twice, which is outside the
+// single-assignment resolution boundary: neither literal is treated as a
+// meta-flag override, and both stay silent under the ordinary rules (kebab
+// name, env-bound, boolean zero default).
+func configureMetaReassigned() {
+	again := &cli.BoolFlag{Name: "verbose", Sources: cli.EnvVars("APP_VERBOSE")}
+	again = &cli.BoolFlag{Name: "verbose", Sources: cli.EnvVars("APP_VERBOSE")}
+	cli.VersionFlag = again
+}
+
+// packageMeta is a package-level variable: another file could rebind it, so
+// the same-function resolution boundary refuses it — the literal stays on the
+// ordinary (conformant here) rules even though it reaches cli.VersionFlag.
+var packageMeta = &cli.BoolFlag{Name: "release", Sources: cli.EnvVars("APP_RELEASE")}
+
+// configureMetaPackageVar assigns the unresolvable package-level variable, and
+// clears the override through non-variable right-hand sides (nil, a call),
+// none of which resolve to a literal.
+func configureMetaPackageVar() {
+	cli.VersionFlag = packageMeta
+	cli.VersionFlag = nil
+	cli.HelpFlag = makeFlag()
+}
+
+// makeFlag hides a literal behind a call; values flowing through calls are
+// outside the resolution boundary.
+func makeFlag() cli.Flag {
+	return &cli.BoolFlag{Name: "made", Sources: cli.EnvVars("APP_MADE")}
+}
+
+// elidedElements builds flags as elided elements of a pointer-typed slice: the
+// &cli.StringFlag is implied by []*cli.StringFlag, and every rule judges the
+// elided literal exactly like the spelled-out form.
+func elidedElements() []*cli.StringFlag {
+	return []*cli.StringFlag{
+		{ // want `must bind an environment variable` `must carry a sensible default via Value`
+			Name: "badName", // want `must be kebab-case`
+		},
+		{
+			Name:    "well-formed",
+			Value:   "x",
+			Sources: cli.EnvVars("APP_WELL_FORMED"),
+		},
+	}
+}
+
 // holder proves a selector target outside the framework is not a meta-flag
 // override: the ordinary rules stay in force.
 type holder struct{ flag cli.Flag }

@@ -33,6 +33,9 @@ func TestFlagTypeRecognizesOnlyTheFrameworkFlagBase(t *testing.T) {
 	isFlag, isBool = flagType(base)
 	want.True(isFlag, "the framework FlagBase is a flag")
 	want.False(isBool, "a FlagBase without type arguments defaults to non-boolean")
+
+	isFlag, _ = flagType(types.NewPointer(base))
+	want.True(isFlag, "a pointer to a flag type (an elided []*T element) is a flag")
 }
 
 // TestStructFlagTypeDemandsAStructWithAValueField pins the non-generic flag
