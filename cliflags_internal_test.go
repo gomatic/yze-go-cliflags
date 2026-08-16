@@ -105,6 +105,34 @@ func TestStructFlagTypeDemandsAStructWithAValueField(t *testing.T) {
 	want.False(hasZeroDefault, "a string Value is not a zero-default type")
 }
 
+// TestIsZeroDefaultTypeCoversEveryEmptyZero names the invariant the doc comment
+// asserts and checks it against every value type urfave/cli v3 builds a flag
+// alias over: the three whose zero IS the sensible default, and the rest whose
+// zero is a value rather than an emptiness. It exists because the alternative
+// was to REWORD the claim until the gate stopped reading it as one, which is
+// docs/s04.md item 7 arriving on prose — the sentence would have said less than
+// its author meant, and nothing would have checked either version.
+func TestIsZeroDefaultTypeCoversEveryEmptyZero(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	for _, valueType := range []types.Type{
+		types.Typ[types.Bool],
+		types.NewSlice(types.Typ[types.String]),
+		types.NewMap(types.Typ[types.String], types.Typ[types.String]),
+	} {
+		want.True(isZeroDefaultType(valueType), valueType.String())
+	}
+
+	for _, valueType := range []types.Type{
+		types.Typ[types.String], types.Typ[types.Int], types.Typ[types.Int8],
+		types.Typ[types.Int64], types.Typ[types.Uint], types.Typ[types.Float32],
+		types.Typ[types.Float64],
+	} {
+		want.False(isZeroDefaultType(valueType), valueType.String())
+	}
+}
+
 // TestExternalsExtendsTheDefaults pins the -external parsing: the defaults are
 // always present, additions append, empty segments are ignored, and the space
 // a comma-separated setting is ordinarily written with is trimmed rather than

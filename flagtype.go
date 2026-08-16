@@ -77,11 +77,11 @@ func isZeroDefaultArgument(named *types.Named) bool {
 // isZeroDefaultType reports whether a flag value type's zero value IS its
 // sensible default. The rule is that sentence; the list below is its
 // consequence rather than a second rule. A boolean's zero is false and a
-// container's zero is empty, which among v3's value types covers bool, a slice
-// (StringSliceFlag, IntSliceFlag, ...) and a map (StringMapFlag). The rest —
-// string, the sized integers, the floats, Duration, Timestamp — have a zero
-// that is a VALUE rather than an emptiness, so their flags carry an explicit
-// Value. Enumerating bool and slice alone left StringMapFlag reported, with
+// container's zero is empty, and v3 ships exactly three such value types: bool,
+// a slice (StringSliceFlag, IntSliceFlag, ...) and a map (StringMapFlag). The
+// rest — string, the sized integers, the floats, Duration, Timestamp — have a
+// zero that is a VALUE rather than an emptiness, so their flags carry an
+// explicit Value. Enumerating bool and slice alone left StringMapFlag reported, with
 // `Value: map[string]string{}` as the remedy — noise the reasoning above does
 // not ask for, and the shape of false positive an author answers with a
 // baseline.
