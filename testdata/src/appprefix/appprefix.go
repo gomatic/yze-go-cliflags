@@ -16,6 +16,7 @@ func Command() *cli.Command {
 			prefixed(), unprefixed(), external(), externalBare(),
 			namespaceIsNotAPrefix(), namespaceIsNotASegment(),
 			stemInsideASegment(), malformedName(),
+			externalTwoSegment(), externalSeparated(),
 		},
 	}
 }
@@ -57,17 +58,40 @@ func externalBare() cli.Flag {
 	}
 }
 
-// namespaceIsNotAPrefix differs from externalBare in exactly one place: the
-// stem is followed by a SECOND segment. libpq owns no two-segment variable, so
-// this is an app variable wearing two of libpq's letters, and the app prefix
-// still applies. Matching the namespace by strings.HasPrefix on the whole name
-// exempted it — two letters bought silence and acquired none of the property
-// the exemption exists for.
+// externalTwoSegment and externalSeparated are REAL libpq variables carrying
+// two segments. They are exempt, and they are here because a revision that
+// narrowed the leading-segment test to a single segment reported both, telling
+// the author to write MY_KILROY_PGCONNECT_TIMEOUT — a name libpq will never
+// read, and a finding answerable only with a baseline.
+func externalTwoSegment() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "connect-timeout",
+		Value:   "10",
+		Sources: cli.EnvVars("PGCONNECT_TIMEOUT"),
+	}
+}
+
+func externalSeparated() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "color",
+		Value:   "auto",
+		Sources: cli.EnvVars("PG_COLOR"),
+	}
+}
+
+// namespaceIsNotAPrefix records a KNOWN and UNCLOSED hole rather than a rule:
+// PGGY_BANK is an app variable wearing two of libpq's letters, and it is
+// silent, because the leading-segment test is a prefix match. Nothing here can
+// tell it from externalTwoSegment above — "belongs to libpq" is a membership
+// question and a prefix is a shape — so this case asserts the silence and
+// names the node instead of pretending the boundary is decided:
+// cliflags.external-name-is-a-namespace-member. It is beside its own near-miss
+// (namespaceIsNotASegment) so that widening the TERMINATED case still fails.
 func namespaceIsNotAPrefix() cli.Flag {
 	return &cli.StringFlag{
 		Name:    "bank",
 		Value:   "x",
-		Sources: cli.EnvVars("PGGY_BANK"), // want `must be prefixed "MY_KILROY_"`
+		Sources: cli.EnvVars("PGGY_BANK"),
 	}
 }
 

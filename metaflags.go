@@ -131,11 +131,11 @@ func markMetaAssignments(pass *analysis.Pass, assign *ast.AssignStmt, state reso
 // struct field, and cmd.Flags is []Flag rather than Flag, so nothing can hold a
 // flag literal and fail it.
 func metaFlagVar(pass *analysis.Pass, expr ast.Expr) *types.Var {
-	sel, ok := expr.(*ast.SelectorExpr)
-	if !ok {
+	ident := namedIdent(expr)
+	if ident == nil {
 		return nil
 	}
-	obj, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Var)
+	obj, ok := pass.TypesInfo.Uses[ident].(*types.Var)
 	if !ok || obj.Pkg() == nil || obj.Pkg().Path() != cliPackage {
 		return nil
 	}
@@ -143,6 +143,26 @@ func metaFlagVar(pass *analysis.Pass, expr ast.Expr) *types.Var {
 		return nil
 	}
 	return obj
+}
+
+// namedIdent returns the identifier an expression names: the selected half of
+// cli.HelpFlag or cli.EnvVars, or the bare name a dot import leaves behind. It
+// reads past parentheses, which Go admits as readily as the plain form and the
+// build treats identically. Matching *ast.SelectorExpr alone cut both ways —
+// one pair of parentheses around an assignment target hid a REPLACING write,
+// so a forged exemption survived in the same block it was replaced in; and it
+// hid an honest sole override too, which was then told to bind the environment
+// variable checkMetaSources forbids. WHICH package object an identifier
+// resolves to is decided by its callers, from its package and its type; this
+// only finds the identifier to ask about.
+func namedIdent(expr ast.Expr) *ast.Ident {
+	switch target := ast.Unparen(expr).(type) {
+	case *ast.SelectorExpr:
+		return target.Sel
+	case *ast.Ident:
+		return target
+	}
+	return nil
 }
 
 // isFrameworkFlagType reports whether obj's type is the framework's Flag
@@ -181,10 +201,15 @@ func markBinding(pass *analysis.Pass, state resolution, ident *ast.Ident) {
 }
 
 // literalOf unwraps the usual &lit form to its composite literal, or nil for
-// anything else.
+// anything else. Parentheses are stripped first because Go REQUIRES them where
+// a composite literal appears in an if, for or switch init clause, and reading
+// past them was not optional: without it, `if cli.HelpFlag = (&cli.BoolFlag{});
+// cond` lost the meta exemption and the override was told to bind an
+// environment variable.
 func literalOf(expr ast.Expr) *ast.CompositeLit {
+	expr = ast.Unparen(expr)
 	if unary, ok := expr.(*ast.UnaryExpr); ok {
-		expr = unary.X
+		expr = ast.Unparen(unary.X)
 	}
 	lit, _ := expr.(*ast.CompositeLit)
 	return lit

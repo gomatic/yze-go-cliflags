@@ -17,10 +17,16 @@ import (
 // believing a rule is narrowed.
 const ErrExternalNamespace errs.Const = "-external entry is not an environment-variable namespace"
 
-// externalShape is what a well-known external namespace can be: an
-// UPPERCASE_SNAKE stem, optionally terminated by the separating underscore —
-// PG, AWS_, DOCKER_, GH_. Anything else fails to prefix a name the
-// UPPERCASE_SNAKE rule admits, so it narrows nothing.
+// externalShape is what a well-known external namespace can be, written from
+// the MATCHER rather than from this setting's description: ONE uppercase
+// segment, optionally terminated by the separating underscore — PG, AWS_,
+// DOCKER_, GH_. leadsNamespace and wrapsAt compare against segments SPLIT on
+// underscore, and a segment never contains one, so a stem with an interior
+// underscore can match at no position. Admitting VAULT_ADDR and
+// GOOGLE_APPLICATION_CREDENTIALS was this validator committing the failure it
+// was written to stop: an entry accepted in silence that narrows nothing, with
+// the operator believing otherwise. A namespace of several segments is not
+// expressible, and refusing it says so.
 //
 // This validates that an entry CAN match, not that it SHOULD. Whether a
 // namespace really belongs to an external tool is the operator's claim and
@@ -31,7 +37,7 @@ const ErrExternalNamespace errs.Const = "-external entry is not an environment-v
 // locked, rather than a marker the judged source can type for itself. Measured
 // 2026-08-15: no repository under ~/src/github.com configures cliflags at all,
 // so the refusal above changes no run in effect today.
-var externalShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_?$`)
+var externalShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*_?$`)
 
 // externalSetting is the parsed -external setting: the comma-separated
 // additional namespaces, each trimmed of the surrounding space the form is

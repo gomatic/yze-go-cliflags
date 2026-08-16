@@ -61,18 +61,43 @@ func externals() namespaces {
 	return append(append(namespaces{}, defaultExternals...), externalAdded.added...)
 }
 
-// segmentMatches reports whether segments[i] is a variable of the namespace's
-// OWN naming. This is the single theory of what a namespace owns, applied at
-// every position: an underscore-terminated namespace (AWS_) owns a segment
-// equal to its stem with more segments following, and a bare namespace (PG)
-// owns a FINAL segment that EXTENDS its stem, because libpq spells its
-// variables as one segment. So PGHOST and AWS_REGION are external, PGGY_BANK
-// and MYAPP_PGP_KEY are app variables, and KILROY_PGHOST and KILROY_AWS_REGION
-// are external namespaces wrapped under an app prefix. Deciding the leading
-// segment by strings.HasPrefix and the rest by this rule gave one run two
-// theories of the same namespace, and put every name merely STARTING with a
-// stem outside the app-prefix rule for the price of two letters.
-func segmentMatches(segments []string, at segmentIndex, namespace externalPrefix) bool {
+// ONE POLICY, TWO POSITIONS, AND WHY THEY ARE NOT THE SAME TEST. Both matchers
+// below answer "does this segment belong to the namespace", and both err toward
+// SILENCE — because a false report on an environment variable name is one the
+// author cannot act on, and an unactionable finding is answered with a
+// baseline. The uncertainty falls on opposite sides at the two positions, so
+// erring toward silence makes the LEADING test wide and the inner test narrow.
+// An earlier revision unified them on the narrow reading; that is the shape the
+// tests below exist to keep out, and the paragraph on leadsNamespace records
+// what it cost.
+
+// leadsNamespace reports whether the LEADING segment is the namespace's own,
+// which is the unprefixed use the standard requires. Deliberately wide: a bare
+// namespace (PG) owns any leading segment starting with its stem, and a
+// terminated one (AWS_) owns a leading segment equal to its stem with more to
+// follow. Narrowing the bare case to a name of ONE segment was tried and
+// REVERTED on measurement: libpq does not spell all of its variables as one
+// segment — PGCONNECT_TIMEOUT and PG_COLOR are two — so the narrow reading
+// reported real libpq variables and prescribed MYAPP_PGCONNECT_TIMEOUT, a name
+// libpq will never read. The cost of being wide is real and is not closable
+// here: PGGY_BANK is exempt too, and no prefix match distinguishes it from
+// PGCONNECT_TIMEOUT, because "belongs to libpq" is a membership question and
+// not a shape. Filed as cliflags.external-name-is-a-namespace-member.
+func leadsNamespace(segments []string, namespace externalPrefix) bool {
+	stem := strings.TrimSuffix(string(namespace), "_")
+	if strings.HasSuffix(string(namespace), "_") {
+		return segments[0] == stem && len(segments) > 1
+	}
+	return strings.HasPrefix(segments[0], stem)
+}
+
+// wrapsAt reports whether a NON-LEADING segment is the namespace's own.
+// Deliberately narrow, for the mirror-image reason: telling an author that
+// MYAPP_PGP_KEY wraps libpq is as unactionable as telling them to prefix
+// PGHOST. A terminated namespace owns a segment equal to its stem with more to
+// follow (KILROY_AWS_REGION, not KILROY_AWS); a bare one owns a FINAL segment
+// that EXTENDS its stem (KILROY_PGHOST, not KILROY_PG and not MYAPP_PGP_KEY).
+func wrapsAt(segments []string, at segmentIndex, namespace externalPrefix) bool {
 	stem := strings.TrimSuffix(string(namespace), "_")
 	last := segmentIndex(len(segments)) - 1
 	if strings.HasSuffix(string(namespace), "_") {
@@ -81,13 +106,12 @@ func segmentMatches(segments []string, at segmentIndex, namespace externalPrefix
 	return at == last && segments[at] != stem && strings.HasPrefix(segments[at], stem)
 }
 
-// isExternal reports whether name IS a well-known external variable — the
-// unprefixed use the standard requires — by asking whether its LEADING segment
-// is the namespace's own.
+// isExternal reports whether name IS a well-known external variable, by asking
+// whether its leading segment is the namespace's own.
 func isExternal(known namespaces, name envName) bool {
 	segments := strings.Split(string(name), "_")
 	for _, namespace := range known {
-		if segmentMatches(segments, 0, namespace) {
+		if leadsNamespace(segments, namespace) {
 			return true
 		}
 	}
@@ -107,13 +131,15 @@ func prefixedExternal(known namespaces, name envName) (externalPrefix, bool) {
 	return "", false
 }
 
-// wrapsNamespace reports whether a NON-LEADING segment is the namespace's own
-// variable. The scan starts at 1 because isExternal owns the leading segment
-// and checkEnvName returns before this runs; starting at 0 is INERT rather than
-// wrong, so it takes no case.
+// wrapsNamespace reports whether any non-leading segment is the namespace's
+// own. The scan starts at 1 because isExternal owns the leading segment and
+// checkEnvName returns before this runs; starting at 0 is INERT rather than
+// wrong, so it takes no case. That inertness belongs to the CALL SITE, not to
+// this function: a second caller of prefixedExternal that does not pre-filter
+// with isExternal would make the start index load-bearing, silently.
 func wrapsNamespace(segments []string, namespace externalPrefix) bool {
 	for at := segmentIndex(1); at < segmentIndex(len(segments)); at++ {
-		if segmentMatches(segments, at, namespace) {
+		if wrapsAt(segments, at, namespace) {
 			return true
 		}
 	}

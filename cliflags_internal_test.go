@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -165,7 +166,15 @@ func TestExternalSettingRefusesWhatCannotNarrowAnything(t *testing.T) {
 	t.Parallel()
 	want := assert.New(t)
 
-	for _, entry := range []string{"vault_", "VAULT-", "1VAULT", "VAULT__ADDR", "VAULT_ ADDR", "_VAULT"} {
+	// VAULT_ADDR and GOOGLE_APPLICATION_CREDENTIALS are the entries this
+	// validator used to ACCEPT: well-formed as prose, unmatchable in fact,
+	// because both matchers compare against segments split on underscore and a
+	// segment never holds one. Written from the description they read as
+	// namespaces; written from the matcher they narrow nothing.
+	for _, entry := range []string{
+		"vault_", "VAULT-", "1VAULT", "VAULT__ADDR", "VAULT_ ADDR", "_VAULT",
+		"VAULT_ADDR", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_S3",
+	} {
 		var setting externalSetting
 		err := setting.Set(entry)
 		want.ErrorIs(err, ErrExternalNamespace, entry)
@@ -194,9 +203,85 @@ func TestPrefixedExternalFindsWrappedNamespaces(t *testing.T) {
 	want.False(found, "no namespace is wrapped")
 
 	want.True(isExternal(defaultExternals, "AWS_REGION"), "an unprefixed external is itself")
-	want.True(isExternal(defaultExternals, "PGHOST"), "a bare namespace owns a single extending segment")
+	want.True(isExternal(defaultExternals, "PGHOST"), "a bare namespace owns a leading segment extending it")
+	want.True(isExternal(defaultExternals, "PGCONNECT_TIMEOUT"), "libpq spells some of its variables in two segments")
+	want.True(isExternal(defaultExternals, "PG_COLOR"), "and some with the stem as a segment of its own")
 	want.False(isExternal(defaultExternals, "MYAPP_REGION"))
-	want.False(isExternal(defaultExternals, "PGGY_BANK"), "a bare namespace owns no two-segment name")
-	want.False(isExternal(defaultExternals, "PG"), "the stem alone extends nothing")
 	want.False(isExternal(defaultExternals, "AWS"), "a terminated namespace needs a segment after it")
+	want.False(isExternal(defaultExternals, "AWSREGION"), "a terminated namespace owns no run-on spelling")
+
+	// The leading test is a PREFIX match and this is what that costs: an app
+	// variable wearing two of libpq's letters is exempt, and nothing here can
+	// tell it from PGCONNECT_TIMEOUT above. Asserted so the hole is visible
+	// rather than discovered again — cliflags.external-name-is-a-namespace-member.
+	want.True(isExternal(defaultExternals, "PGGY_BANK"), "a known, unclosed hole, asserted rather than hidden")
+}
+
+// TestPositionAssignmentSeesThroughALabelAndAnInitClause names the unwrapping
+// the dead-write rule stands on and checks each wrapper separately. Without it,
+// one label or one init clause kept a meta-flag exemption that the identical
+// bare assignment would have lost — a laundering route measured against the
+// real framework before this test existed.
+func TestPositionAssignmentSeesThroughALabelAndAnInitClause(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	assign := &ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("x")}, Rhs: []ast.Expr{ast.NewIdent("y")}}
+	cond := ast.NewIdent("cond")
+	body := &ast.BlockStmt{}
+
+	want.Same(assign, positionAssignment(assign), "a bare assignment is itself")
+	want.Same(assign, positionAssignment(&ast.LabeledStmt{Label: ast.NewIdent("L"), Stmt: assign}))
+	want.Same(assign, positionAssignment(&ast.IfStmt{Init: assign, Cond: cond, Body: body}))
+	want.Same(assign, positionAssignment(&ast.ForStmt{Init: assign, Body: body}))
+	want.Same(assign, positionAssignment(&ast.SwitchStmt{Init: assign, Body: body}))
+	want.Same(assign, positionAssignment(&ast.TypeSwitchStmt{Init: assign, Body: body}))
+	want.Same(assign, positionAssignment(&ast.LabeledStmt{
+		Label: ast.NewIdent("L"),
+		Stmt:  &ast.IfStmt{Init: assign, Cond: cond, Body: body},
+	}), "wrappers nest")
+
+	want.Nil(positionAssignment(&ast.IfStmt{Cond: cond, Body: body}), "an if with no init assigns nothing here")
+	want.Nil(positionAssignment(&ast.ExprStmt{X: cond}), "a statement that is no assignment assigns nothing")
+	want.Nil(positionAssignment(body), "a nested block runs its statements at their own positions, not here")
+}
+
+// TestLeadsNamespaceIsWideAtTheLeadingSegment names the deliberately wide half
+// of the namespace policy: what an external tool owns unprefixed. It is wide
+// because narrowing it reported PGCONNECT_TIMEOUT and PG_COLOR, real libpq
+// variables, and prescribed a name libpq will never read.
+func TestLeadsNamespaceIsWideAtTheLeadingSegment(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	bare := func(name string) bool { return leadsNamespace(strings.Split(name, "_"), "PG") }
+	want.True(bare("PGHOST"))
+	want.True(bare("PGCONNECT_TIMEOUT"), "two segments, and libpq's")
+	want.True(bare("PG_COLOR"), "the stem as a segment of its own")
+	want.True(bare("PGGY_BANK"), "the cost of a prefix match, asserted rather than hidden")
+	want.False(bare("MYAPP_PGHOST"), "a wrapped external does not LEAD with the namespace")
+	want.False(bare("WIDGET_NAME"))
+
+	terminated := func(name string) bool { return leadsNamespace(strings.Split(name, "_"), "AWS_") }
+	want.True(terminated("AWS_REGION"))
+	want.False(terminated("AWS"), "the separator means a segment has to follow")
+	want.False(terminated("AWSREGION"), "and that the stem is a whole segment")
+	want.False(terminated("MYAPP_AWS_REGION"))
+}
+
+// TestExternalShapeMatchesOnlyWhatTheMatcherCanUse names the -external
+// validator's shape and checks it against what leadsNamespace and wrapsAt can
+// actually consume: one segment, optionally terminated. Written from this
+// setting's description instead, it accepted VAULT_ADDR — well-formed prose
+// that narrows nothing, which is the failure the validator exists to stop.
+func TestExternalShapeMatchesOnlyWhatTheMatcherCanUse(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	for _, entry := range []string{"PG", "AWS_", "DOCKER_", "GH_", "V2_", "X"} {
+		want.True(externalShape.MatchString(entry), entry)
+	}
+	for _, entry := range []string{"VAULT_ADDR", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_S3", "vault_", "1PG", "_PG", "PG-"} {
+		want.False(externalShape.MatchString(entry), entry)
+	}
 }

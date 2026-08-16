@@ -3,6 +3,8 @@
 package app
 
 import (
+	"context"
+
 	cli "github.com/urfave/cli/v3"
 
 	"lookalike"
@@ -29,11 +31,11 @@ func Command() *cli.Command {
 		Name: "app",
 		Flags: []cli.Flag{
 			good(), goodBool(), goodInt(), goodSlice(), goodMap(), goodDuration(),
-			noSources(), fileSources(), emptyEnvVars(), wrapped(), methodWrapped(), forgedEnvVars(),
+			noSources(), fileSources(), emptyEnvVars(), wrapped(), methodWrapped(), forgedEnvVars(), invokedLiteral(),
 			noValue(), noMapValue(), camelName(), required(), requiredFalse(), requiredNonConstant(),
 			prefixedExternal(), lowerSnake(), constantEnv(), dynamic(), nameless(),
 			inverse(), singularEnv(), pgpKey(), prefixedAWS(),
-			bareNamespaceTail(), terminatedNamespaceTail(),
+			bareNamespaceTail(), terminatedNamespaceTail(), terminatedStemIsAWholeSegment(),
 			emptyName(), emptyConstName(),
 			doubleSeparator(), leadingSeparator(), trailingSeparator(),
 			kebabPair(), kebabWord(), kebabDigit(), kebabTriple(),
@@ -179,6 +181,18 @@ func wrapped() cli.Flag {
 		Name:    "wrapped",
 		Value:   "x",
 		Sources: chain("MYAPP_WRAPPED"),
+	}
+}
+
+// invokedLiteral wires Sources from an immediately-invoked function literal,
+// whose callee is no name at all. It differs from wrapped() in exactly one
+// place: the cli.EnvVars call is written HERE rather than behind a named
+// helper, so the binding is visible at the literal and nothing is reported.
+func invokedLiteral() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "invoked",
+		Value:   "x",
+		Sources: func() cli.ValueSourceChain { return cli.EnvVars("MYAPP_INVOKED") }(),
 	}
 }
 
@@ -328,6 +342,18 @@ func terminatedNamespaceTail() cli.Flag {
 		Name:    "aws",
 		Value:   "x",
 		Sources: cli.EnvVars("KILROY_AWS"),
+	}
+}
+
+// terminatedStemIsAWholeSegment differs from prefixedAWS in exactly one place:
+// the inner segment merely STARTS with the namespace's stem instead of being
+// it. AWSX is not AWS_, so nothing is wrapped and nothing is reported — an
+// underscore-terminated namespace owns a whole segment, not a run-on.
+func terminatedStemIsAWholeSegment() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "awsx",
+		Value:   "x",
+		Sources: cli.EnvVars("KILROY_AWSX_REGION"),
 	}
 }
 
@@ -492,6 +518,94 @@ func configureMetaInSelect(ch chan int) {
 	}
 }
 
+// configureMetaSaveRestore is the canonical save / override / run / restore
+// idiom, and it is entirely honest: the override REACHES the framework, runs,
+// and is put back. The restore is not adjacent to it, so the override is live
+// and exempt, and nothing is reported. A rule that scanned the whole statement
+// list marked it dead and demanded an env binding on the help flag — the one
+// thing checkMetaSources forbids, so complying with one rule violated another.
+func configureMetaSaveRestore(ctx context.Context, cmd *cli.Command) {
+	saved := cli.HelpFlag
+	cli.HelpFlag = &cli.BoolFlag{Name: "help", Usage: "show help"}
+	_ = cmd
+	_ = ctx
+	cli.HelpFlag = saved
+}
+
+// configureMetaOverwrittenLabelled replaces the write on the very next
+// statement, which happens to carry a LABEL. A label changes nothing about
+// when the assignment runs, so the earlier write is as dead as it is in
+// configureMetaOverwritten and its literal is judged the same way. Reading
+// only a bare assignment made this one token enough to keep the exemption.
+func configureMetaOverwrittenLabelled(again bool) cli.Flag {
+	labelled := &cli.StringFlag{ // want `must bind an environment variable`
+		Name:  "labelled",
+		Value: "x",
+	}
+	cli.HelpFlag = labelled
+retry:
+	cli.HelpFlag = &cli.BoolFlag{Name: "help"}
+	if again {
+		again = false
+		goto retry
+	}
+	return labelled
+}
+
+// configureMetaOverwrittenInInit replaces it from an if INIT clause, which
+// also runs exactly where the statement sits. It differs from
+// configureMetaOverwrittenLabelled in exactly one place — which wrapper hides
+// the replacing assignment — so the two pin the unwrapping separately.
+func configureMetaOverwrittenInInit(cond bool) cli.Flag {
+	inInit := &cli.StringFlag{ // want `must bind an environment variable`
+		Name:  "in-init",
+		Value: "x",
+	}
+	cli.HelpFlag = inInit
+	if cli.HelpFlag = (&cli.BoolFlag{Name: "help"}); cond {
+		_ = cond
+	}
+	return inInit
+}
+
+// configureMetaOverwrittenParenTarget replaces the write through a
+// PARENTHESISED target. It differs from configureMetaOverwritten in exactly one
+// place — two characters around the left-hand side — and Go compiles the two
+// identically, so the earlier write is as dead here as it is there. Matching
+// the target by its syntax rather than by the variable it names made those two
+// characters enough to keep the exemption, in the same block, on the next line.
+func configureMetaOverwrittenParenTarget() cli.Flag {
+	parenthesised := &cli.StringFlag{ // want `must bind an environment variable`
+		Name:  "parenthesised",
+		Value: "x",
+	}
+	cli.HelpFlag = parenthesised
+	(cli.HelpFlag) = &cli.BoolFlag{Name: "help"}
+	return parenthesised
+}
+
+// configureMetaParenTargetOnly is the same spelling used HONESTLY, as a sole
+// override: it installs the literal and nothing replaces it, so the meta rule
+// applies and the ordinary Sources requirement does not. The same blindness
+// that let the forgery through reported this one.
+func configureMetaParenTargetOnly() {
+	(cli.VersionFlag) = &cli.BoolFlag{Name: "version", Usage: "print the version"}
+}
+
+// configureMetaNotAdjacent puts one statement between the write and its
+// replacement. That statement could read the variable, so the analyzer cannot
+// say the first write was never observed, and the literal keeps the exemption.
+func configureMetaNotAdjacent() cli.Flag {
+	spaced := &cli.BoolFlag{Name: "spaced"}
+	cli.HelpFlag = spaced
+	observe()
+	cli.HelpFlag = &cli.BoolFlag{Name: "help"}
+	return spaced
+}
+
+// observe stands for anything that could read the framework's meta flag.
+func observe() {}
+
 // configureLookalikeVar writes another package's variable that is spelled and
 // typed exactly like the framework's. Identity is the package the variable
 // belongs to, so nothing is exempt and the ordinary Sources rule is reported.
@@ -563,12 +677,15 @@ func configureMetaNonLiteral() {
 func twoFlags() (cli.Flag, cli.Flag) { return nil, nil }
 
 // configureMetaTuple writes both meta variables from ONE call, which is the
-// shape whose left-hand side is longer than its right. Nothing resolves to a
-// literal through a call, so nothing is exempt and nothing is reported. The
-// case exists for the index guard that makes the walk survive it: no rule of
-// this analyzer mentions such a guard, and deleting either one panics here with
-// index out of range.
+// shape whose left-hand side is longer than its right, and writes it TWICE so
+// the pair is adjacent — the two walks that index a right-hand side are the
+// per-assignment one and the replacement one, and only an adjacent pair reaches
+// the second. Nothing resolves to a literal through a call, so nothing is
+// exempt and nothing is reported. The case exists for the index guards that
+// make the walk survive it: no rule of this analyzer mentions such a guard, and
+// deleting either one panics here with index out of range.
 func configureMetaTuple() {
+	cli.VersionFlag, cli.HelpFlag = twoFlags()
 	cli.VersionFlag, cli.HelpFlag = twoFlags()
 }
 

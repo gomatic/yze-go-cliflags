@@ -21,6 +21,15 @@ func TestFlagStandards(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), cliflags.Analyzer, "app")
 }
 
+// TestDotImportedMetaFlag pins that a meta-flag variable is identified by which
+// variable it IS — its package and its type — and not by being spelled with a
+// package qualifier. A dot import leaves the same variable named by a bare
+// identifier, and a matcher reading only selectors saw neither the honest
+// override nor the write that replaces one.
+func TestDotImportedMetaFlag(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), cliflags.Analyzer, "dotimport")
+}
+
 // TestAppPrefixSetting pins -app: app-specific variables must carry the
 // UPPERCASE_SNAKE app prefix (my-kilroy becomes MY_KILROY_), while well-known
 // external variables stay exempt.

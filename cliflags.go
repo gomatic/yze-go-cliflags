@@ -147,9 +147,16 @@ type fieldMap map[string]*ast.KeyValueExpr
 // exist in judged code: every v3 flag struct carries unexported fields, so an
 // unkeyed literal of one is a compile error outside the framework's own
 // package ("too few values in struct literal of type cli.StringFlag",
-// v3.10.1). Measured against that module — the only place the shape compiles —
-// dropping the exemption left all 1138 findings over its 26 packages
-// byte-identical, which is dead defensive code rather than a rule.
+// v3.10.1) — verified by building both shapes, and that argument carries the
+// removal on its own.
+//
+// A sweep was cited here as evidence and has been withdrawn: dropping the
+// exemption left urfave/cli's own 1138 findings unchanged, but that module
+// declares no unkeyed literal of an EXPORTED flag type either — its only
+// unkeyed flag literals build the unexported customBoolFlag, which
+// structFlagType rejects under both binaries. A corpus holding none of the
+// shape cannot tell dead code from an instrument that could not see it, so the
+// number proved nothing and is not offered as though it did.
 func collectFields(lit *ast.CompositeLit) fieldMap {
 	fields := fieldMap{}
 	for _, elt := range lit.Elts {
@@ -249,13 +256,17 @@ func bindsEnv(calls []*ast.CallExpr) bool {
 
 // isEnvVarFunc reports whether fun resolves to urfave/cli v3's EnvVars (the
 // chain form) or EnvVar (the single-source form used inside
-// cli.NewValueSourceChain) — both are first-class upstream bindings.
+// cli.NewValueSourceChain) — both are first-class upstream bindings. It asks
+// which function the name resolves to rather than how the call is spelled: a
+// dot-imported EnvVars(...) is the framework's binder and was reported as
+// binding nothing, and a method of the analyzed package named EnvVars is not
+// one however much it looks like it.
 func isEnvVarFunc(pass *analysis.Pass, fun ast.Expr) bool {
-	sel, ok := fun.(*ast.SelectorExpr)
-	if !ok {
+	ident := namedIdent(fun)
+	if ident == nil {
 		return false
 	}
-	obj, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+	obj, ok := pass.TypesInfo.Uses[ident].(*types.Func)
 	if !ok || obj.Pkg() == nil || obj.Pkg().Path() != cliPackage {
 		return false
 	}
