@@ -39,3 +39,34 @@ func TestCheckMetaSourcesEnvBindingIsInertUpstream(t *testing.T) {
 	assert.True(t, ran, "the action must run: the env-bound version flag is inert upstream")
 	assert.Empty(t, out.String(), "no version output despite the env var being set")
 }
+
+// TestCheckMetaSourcesCompletionBindingIsInertUpstream pins the upstream fact
+// behind treating cli.GenerateShellCompletionFlag as a meta-flag: v3 decides
+// completion from the LITERAL last argument "--generate-shell-completion"
+// (completion.go:14, help.go:482) and reads the variable nowhere, so an env
+// binding on an override of it cannot ever trigger completion. If this test
+// ever fails, upstream started reading the variable and the rule must be
+// reconsidered.
+func TestCheckMetaSourcesCompletionBindingIsInertUpstream(t *testing.T) {
+	orig := urf.GenerateShellCompletionFlag
+	t.Cleanup(func() { urf.GenerateShellCompletionFlag = orig })
+	t.Setenv("CLIFLAGS_META_PROBE_COMPLETION", "true")
+	urf.GenerateShellCompletionFlag = &urf.BoolFlag{
+		Name:    "generate-shell-completion",
+		Sources: urf.EnvVars("CLIFLAGS_META_PROBE_COMPLETION"),
+	}
+
+	ran := false
+	var out bytes.Buffer
+	cmd := &urf.Command{
+		Name:                  "probe",
+		EnableShellCompletion: true,
+		Writer:                &out,
+		Commands:              []*urf.Command{{Name: "sub"}},
+		Action:                func(context.Context, *urf.Command) error { ran = true; return nil },
+	}
+	require.NoError(t, cmd.Run(context.Background(), []string{"probe"}))
+
+	assert.True(t, ran, "the action must run: the env-bound completion flag is inert upstream")
+	assert.Empty(t, out.String(), "no completion listing despite the env var being set")
+}

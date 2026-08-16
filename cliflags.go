@@ -3,9 +3,11 @@
 // is one line of the go-cli standard:
 //
 //   - every flag binds an environment variable via Sources: cli.EnvVars(...)
-//   - every flag whose zero value is not its sensible default (i.e. all but
-//     booleans and slices) carries an explicit default via Value
-//   - flag names are kebab-case
+//   - every flag whose zero value is not its sensible default carries an
+//     explicit default via Value. A boolean's false and a container's empty
+//     ARE that default, so bool, slice and map flags carry none; every other
+//     value type v3 ships has a zero that is a value rather than an emptiness
+//   - flag names are kebab-case, the empty name included: it names no flag
 //   - an app-specific environment variable is UPPERCASE_SNAKE_CASE (prefixed
 //     with the app name when -app is set), while a well-known external
 //     variable (PG*, AWS_*, DOCKER_*, ...) is used UNPREFIXED — no
@@ -16,7 +18,14 @@
 // A flag literal is a single-package fact, which is what makes these rules
 // analyzer-shaped; the surrounding package structure is yze/cliapp's and
 // stickler/clilayout's business. The well-known namespace list is seeded from
-// the standard's own examples and extended with -external.
+// the standard's own examples and extended with -external, whose entries are
+// trimmed and validated when the setting is applied — a namespace that cannot
+// name an environment variable is refused rather than registered.
+//
+// One exemption inverts a rule: a flag literal a file installs in one of the
+// framework's own package-level Flag variables (cli.VersionFlag,
+// cli.HelpFlag, cli.GenerateShellCompletionFlag) is forbidden Sources instead
+// of required to have them, because v3 reads those before Sources apply.
 package cliflags
 
 import (
@@ -38,7 +47,7 @@ const (
 	messageSnake     = "environment variable %q must be UPPERCASE_SNAKE_CASE"
 	messagePrefixed  = "environment variable %q prefixes the well-known external namespace %s — use the external name unprefixed"
 	messageAppPrefix = "app-specific environment variable %q must be prefixed %q"
-	messageMetaEnv   = "flag %q overrides cli.VersionFlag/cli.HelpFlag — an env binding there is inert (urfave's version/help checks run before Sources apply) yet advertised in help output; remove it"
+	messageMetaEnv   = "flag %q overrides a framework meta-flag (cli.VersionFlag/cli.HelpFlag/cli.GenerateShellCompletionFlag) — an env binding there is inert (urfave reads them before Sources apply) yet advertised in help output; remove it"
 )
 
 // cliPackage is the import path of the sanctioned CLI framework.
@@ -50,7 +59,7 @@ type externalPrefix string
 
 // defaultExternals seeds the namespace list from the go-cli standard's own
 // examples (PGHOST/PGPORT, AWS_REGION, DOCKER_*).
-var defaultExternals = []externalPrefix{"PG", "AWS_", "DOCKER_"}
+var defaultExternals = namespaces{"PG", "AWS_", "DOCKER_"}
 
 // upperSnake is the shape of an app-specific environment variable name.
 var upperSnake = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
@@ -58,9 +67,9 @@ var upperSnake = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
 // kebabCase is the shape of a flag name.
 var kebabCase = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// externalExtra holds -external: comma-separated ADDITIONAL well-known
-// namespaces, on top of the defaults.
-var externalExtra string
+// externalAdded holds -external: the ADDITIONAL well-known namespaces parsed
+// from the setting, on top of the defaults.
+var externalAdded externalSetting
 
 // appPrefix holds -app: the app name whose UPPERCASE_SNAKE prefix every
 // app-specific environment variable must carry. Empty skips the prefix
@@ -76,7 +85,7 @@ func newAnalyzer() *analysis.Analyzer {
 		Doc:  "reports urfave/cli v3 flag literals that break the opinionated flag standard (env Sources, Value default, kebab-case, no Required)",
 		Run:  run,
 	}
-	a.Flags.StringVar(&externalExtra, "external", "",
+	a.Flags.Var(&externalAdded, "external",
 		"comma-separated additional well-known external env namespaces (e.g. VAULT_,GH_)")
 	a.Flags.StringVar(&appPrefix, "app", "",
 		"app name whose UPPERCASE_SNAKE prefix app-specific environment variables must carry")
@@ -93,11 +102,12 @@ var Registration = goyze.Registration{
 
 // run inspects every composite literal for the flag rules.
 func run(pass *analysis.Pass) (any, error) {
+	known := externals()
 	for _, file := range pass.Files {
 		meta := metaFlagLiterals(pass, file)
 		ast.Inspect(file, func(node ast.Node) bool {
 			if lit, ok := node.(*ast.CompositeLit); ok {
-				checkFlagLiteral(pass, lit, meta)
+				checkFlagLiteral(pass, lit, meta, known)
 			}
 			return true
 		})
@@ -105,23 +115,21 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// checkFlagLiteral applies every flag rule to one v3 flag literal. An unkeyed
-// literal is skipped: it specifies every field positionally, so "field absent"
-// is meaningless there, and vet's composites check already forbids unkeyed
-// literals of another module's structs. A meta-flag override (a member of
-// meta) inverts the env rule: Sources are forbidden there instead of required.
-func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit, meta metaLiterals) {
+// checkFlagLiteral applies every flag rule to one v3 flag literal. A meta-flag
+// override (a member of meta) inverts the env rule: Sources are forbidden
+// there instead of required.
+func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit, meta metaLiterals, known namespaces) {
 	isFlag, hasZeroDefault := flagType(pass.TypesInfo.TypeOf(lit))
-	if !isFlag || !isKeyed(lit) {
+	if !isFlag {
 		return
 	}
 	fields := collectFields(lit)
-	name := nameOf(pass, fields)
-	checkName(pass, fields, name)
+	name, isResolved := nameOf(pass, fields)
+	checkName(pass, fields["Name"], name, isResolved)
 	if meta[lit] {
 		checkMetaSources(pass, lit, fields, name)
 	} else {
-		checkSources(pass, lit, fields, name)
+		checkSources(pass, lit, fields, name, known)
 	}
 	if !hasZeroDefault {
 		checkValue(pass, lit, fields, name)
@@ -129,28 +137,26 @@ func checkFlagLiteral(pass *analysis.Pass, lit *ast.CompositeLit, meta metaLiter
 	checkRequired(pass, fields, name)
 }
 
-// isKeyed reports whether every element of lit is a keyed field.
-func isKeyed(lit *ast.CompositeLit) bool {
-	for _, elt := range lit.Elts {
-		if _, ok := elt.(*ast.KeyValueExpr); !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // fieldMap indexes a composite literal's keyed elements by field name.
 type fieldMap map[string]*ast.KeyValueExpr
 
-// collectFields indexes lit's keyed elements by field name. The caller has
-// already established every element is keyed, and a struct literal spells its
-// keys as plain identifiers.
+// collectFields indexes lit's keyed elements by field name; a struct literal
+// spells its keys as plain identifiers. An UNKEYED element is skipped rather
+// than exempting the whole literal. The exemption it replaces claimed "field
+// absent is meaningless in a positional literal", and that shape does not
+// exist in judged code: every v3 flag struct carries unexported fields, so an
+// unkeyed literal of one is a compile error outside the framework's own
+// package ("too few values in struct literal of type cli.StringFlag",
+// v3.10.1). Measured against that module — the only place the shape compiles —
+// dropping the exemption left all 1138 findings over its 26 packages
+// byte-identical, which is dead defensive code rather than a rule.
 func collectFields(lit *ast.CompositeLit) fieldMap {
 	fields := fieldMap{}
 	for _, elt := range lit.Elts {
-		kv, _ := elt.(*ast.KeyValueExpr)
-		if key, ok := kv.Key.(*ast.Ident); ok {
-			fields[key.Name] = kv
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			if key, isIdent := kv.Key.(*ast.Ident); isIdent {
+				fields[key.Name] = kv
+			}
 		}
 	}
 	return fields
@@ -159,15 +165,22 @@ func collectFields(lit *ast.CompositeLit) fieldMap {
 // flagName is a flag's Name value as written in source.
 type flagName string
 
-// nameOf resolves the flag's Name field to its constant value, or "" when the
-// literal declares none (or declares it non-constantly).
-func nameOf(pass *analysis.Pass, fields fieldMap) flagName {
+// nameResolved reports whether a flag literal declares a constant Name at all.
+// It is a different fact from the name being empty, which is a name.
+type nameResolved bool
+
+// nameOf resolves the flag's Name field to its constant value. The second
+// result says whether there is a name to judge at all — a literal declaring no
+// Name, or declaring it non-constantly, has none. That is a different fact
+// from declaring the EMPTY name, and returning "" for both put `Name: ""`
+// outside the kebab-case rule it plainly violates.
+func nameOf(pass *analysis.Pass, fields fieldMap) (flagName, nameResolved) {
 	kv := fields["Name"]
 	if kv == nil {
-		return ""
+		return "", false
 	}
-	name, _ := constantString(pass, kv.Value)
-	return flagName(name)
+	name, ok := constantString(pass, kv.Value)
+	return flagName(name), nameResolved(ok)
 }
 
 // constantString resolves expr to its constant string value, following named
@@ -180,10 +193,12 @@ func constantString(pass *analysis.Pass, expr ast.Expr) (string, bool) {
 	return constant.StringVal(value), true
 }
 
-// checkName reports a flag name that is not kebab-case.
-func checkName(pass *analysis.Pass, fields fieldMap, name flagName) {
-	kv := fields["Name"]
-	if kv == nil || name == "" {
+// checkName reports a flag name that is not kebab-case. isResolved is the
+// caller's answer to whether a constant name was found; the empty name IS one,
+// and is judged like any other, because urfave registers a flag nothing can
+// spell.
+func checkName(pass *analysis.Pass, kv *ast.KeyValueExpr, name flagName, isResolved nameResolved) {
+	if !isResolved {
 		return
 	}
 	if !kebabCase.MatchString(string(name)) {
@@ -194,14 +209,14 @@ func checkName(pass *analysis.Pass, fields fieldMap, name flagName) {
 // checkSources reports a flag that binds no environment variable, and checks
 // every name it does bind. A Sources field with no cli.EnvVars(...) or
 // cli.EnvVar(...) call — or only empty ones — binds nothing.
-func checkSources(pass *analysis.Pass, lit *ast.CompositeLit, fields fieldMap, name flagName) {
+func checkSources(pass *analysis.Pass, lit *ast.CompositeLit, fields fieldMap, name flagName, known namespaces) {
 	calls := envVarCalls(pass, fields["Sources"])
 	if !bindsEnv(calls) {
 		pass.Reportf(lit.Pos(), messageSources, name)
 		return
 	}
 	for _, call := range calls {
-		checkEnvNames(pass, call)
+		checkEnvNames(pass, call, known)
 	}
 }
 

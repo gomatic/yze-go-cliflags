@@ -7,8 +7,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// metaLiterals marks the flag literals assigned to urfave/cli's package-level
-// VersionFlag/HelpFlag variables.
+// metaLiterals marks the flag literals a file installs in urfave/cli's own
+// package-level Flag variables.
 type metaLiterals map[*ast.CompositeLit]bool
 
 // literalBindings maps a function-local variable to the single &lit composite
@@ -16,23 +16,6 @@ type metaLiterals map[*ast.CompositeLit]bool
 // more than once, or with something that is no composite literal, and
 // resolution refuses to vouch for it.
 type literalBindings map[*types.Var]*ast.CompositeLit
-
-// metaFlagLiterals collects the flag literals a file assigns to cli.VersionFlag
-// or cli.HelpFlag — directly (&lit) or through a function-local variable's
-// single &lit binding. Overriding those globals is how an app reshapes the
-// built-in meta-flags, and their env-binding rule inverts there (see
-// checkMetaSources).
-func metaFlagLiterals(pass *analysis.Pass, file *ast.File) metaLiterals {
-	meta := metaLiterals{}
-	bindings := collectBindings(pass, file)
-	ast.Inspect(file, func(node ast.Node) bool {
-		if assign, ok := node.(*ast.AssignStmt); ok {
-			markMetaAssignments(pass, assign, meta, bindings)
-		}
-		return true
-	})
-	return meta
-}
 
 // collectBindings records every function-local variable's single &lit binding
 // in the file. The resolution boundary is deliberate — same file, function
@@ -117,52 +100,83 @@ func identVar(pass *analysis.Pass, ident *ast.Ident) (*types.Var, bool) {
 	return obj, ok
 }
 
-// markMetaAssignments records each right-hand literal whose left-hand side is
-// a meta-flag variable.
-func markMetaAssignments(pass *analysis.Pass, assign *ast.AssignStmt, meta metaLiterals, bindings literalBindings) {
+// markMetaAssignments records each right-hand literal whose left-hand side
+// installs a meta flag. A write a later one in the same statement list replaces
+// is skipped, because it does not reach the framework — exempting its literal
+// would hand a flag the exemption for one dead line.
+func markMetaAssignments(pass *analysis.Pass, assign *ast.AssignStmt, state resolution) {
 	for i, lhs := range assign.Lhs {
-		if i < len(assign.Rhs) && isMetaFlagVar(pass, lhs) {
-			markLiteral(pass, meta, bindings, assign.Rhs[i])
+		if i < len(assign.Rhs) && !state.dead[assign.Rhs[i]] && metaFlagVar(pass, lhs) != nil {
+			markLiteral(pass, state, assign.Rhs[i])
 		}
 	}
 }
 
-// isMetaFlagVar reports whether expr resolves to urfave/cli v3's VersionFlag or
-// HelpFlag package variable.
-func isMetaFlagVar(pass *analysis.Pass, expr ast.Expr) bool {
+// metaFlagVar resolves expr to the framework's own Flag variable it names, or
+// nil. Identity is the FRAMEWORK'S storage, not a list of names: a variable
+// belonging to urfave/cli v3 whose type is that package's Flag interface. v3
+// declares three — VersionFlag, HelpFlag and GenerateShellCompletionFlag — and
+// naming two of them left the third judged as an ordinary flag, which is a
+// false report on the shape upstream documents.
+//
+// What acquiring this costs is worth stating rather than claiming away. Nothing
+// outside the module can add a variable to cli, so the SET is not forgeable —
+// but installing an ordinary flag in one of these slots does silence its
+// Sources requirement, and how much that costs differs per slot: replacing
+// VersionFlag or HelpFlag changes what --version and --help do, while v3.10.1
+// reads GenerateShellCompletionFlag nowhere (completion triggers on the literal
+// argument), so installing a flag there costs one visible line and nothing
+// else. Raised as cliflags.meta-slot-is-not-a-flag-list rather than settled
+// here. The Flag-type test is measured INERT: v3.10.1 exports no Flag-typed
+// struct field, and cmd.Flags is []Flag rather than Flag, so nothing can hold a
+// flag literal and fail it.
+func metaFlagVar(pass *analysis.Pass, expr ast.Expr) *types.Var {
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
-		return false
+		return nil
 	}
 	obj, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Var)
 	if !ok || obj.Pkg() == nil || obj.Pkg().Path() != cliPackage {
-		return false
+		return nil
 	}
-	return obj.Name() == "VersionFlag" || obj.Name() == "HelpFlag"
+	if !isFrameworkFlagType(obj) {
+		return nil
+	}
+	return obj
+}
+
+// isFrameworkFlagType reports whether obj's type is the framework's Flag
+// interface — the single-flag storage urfave reads, as against the []Flag list
+// an app fills with its own flags. It asks about the TYPE's package, which is a
+// different question from metaFlagVar's about the VARIABLE's: a field of this
+// package typed cli.Flag answers yes here and no there.
+func isFrameworkFlagType(obj *types.Var) bool {
+	named, ok := types.Unalias(obj.Type()).(*types.Named)
+	return ok && named.Obj().Name() == "Flag" && named.Obj().Pkg().Path() == cliPackage
 }
 
 // markLiteral records expr's composite literal as a meta-flag override —
 // either the direct &lit form, or a function-local variable resolved through
 // its single &lit binding.
-func markLiteral(pass *analysis.Pass, meta metaLiterals, bindings literalBindings, expr ast.Expr) {
+func markLiteral(pass *analysis.Pass, state resolution, expr ast.Expr) {
 	if ident, ok := expr.(*ast.Ident); ok {
-		markBinding(pass, meta, bindings, ident)
+		markBinding(pass, state, ident)
 		return
 	}
 	if lit := literalOf(expr); lit != nil {
-		meta[lit] = true
+		state.meta[lit] = true
 	}
 }
 
 // markBinding records the literal a variable-indirected override resolves to,
 // when its variable has a usable single &lit binding.
-func markBinding(pass *analysis.Pass, meta metaLiterals, bindings literalBindings, ident *ast.Ident) {
+func markBinding(pass *analysis.Pass, state resolution, ident *ast.Ident) {
 	obj, ok := pass.TypesInfo.Uses[ident].(*types.Var)
 	if !ok {
 		return
 	}
-	if lit := bindings[obj]; lit != nil {
-		meta[lit] = true
+	if lit := state.bindings[obj]; lit != nil {
+		state.meta[lit] = true
 	}
 }
 
@@ -176,13 +190,17 @@ func literalOf(expr ast.Expr) *ast.CompositeLit {
 	return lit
 }
 
-// checkMetaSources reports an env binding on a cli.VersionFlag/cli.HelpFlag
-// override. urfave v3 evaluates its version and help checks before
-// FlagBase.PostParse applies Sources, so a binding there never triggers the
-// meta-flag — while the generated help output still advertises the variable
-// (TestCheckMetaSourcesEnvBindingIsInertUpstream pins that upstream order against the real
-// framework). Dead and misleading, so the standard forbids it rather than
-// requiring it.
+// checkMetaSources reports an env binding on a framework meta-flag override.
+// urfave v3 evaluates its version and help checks before FlagBase.PostParse
+// applies Sources, so a binding there never triggers the meta-flag — while the
+// generated help output still advertises the variable
+// (TestCheckMetaSourcesEnvBindingIsInertUpstream pins that upstream order
+// against the real framework). The completion flag is inert for a stronger
+// reason: v3.10.1 triggers completion on the literal argument
+// "--generate-shell-completion" (completion.go:14, help.go:482) and reads
+// GenerateShellCompletionFlag nowhere, which
+// TestCheckMetaSourcesCompletionBindingIsInertUpstream pins. Dead and
+// misleading, so the standard forbids it rather than requiring it.
 func checkMetaSources(pass *analysis.Pass, lit *ast.CompositeLit, fields fieldMap, name flagName) {
 	if bindsEnv(envVarCalls(pass, fields["Sources"])) {
 		pass.Reportf(lit.Pos(), messageMetaEnv, name)

@@ -4,11 +4,17 @@ package app
 
 import (
 	cli "github.com/urfave/cli/v3"
+
+	"lookalike"
 )
 
 // Environment names resolved through named constants prove the checks read
 // constant VALUES, not just literals.
 const badEnv = "bad_env"
+
+// noName is the EMPTY name reached through a constant: a name the literal
+// declares, unlike a Name field that is absent or non-constant.
+const noName = ""
 
 // nonConstant values name nothing checkable and are left alone.
 var (
@@ -22,11 +28,15 @@ func Command() *cli.Command {
 	return &cli.Command{
 		Name: "app",
 		Flags: []cli.Flag{
-			good(), goodBool(), goodInt(), goodSlice(), goodDuration(),
-			noSources(), fileSources(), emptyEnvVars(), positional(), wrapped(), methodWrapped(),
-			noValue(), camelName(), required(), requiredNonConstant(),
+			good(), goodBool(), goodInt(), goodSlice(), goodMap(), goodDuration(),
+			noSources(), fileSources(), emptyEnvVars(), wrapped(), methodWrapped(), forgedEnvVars(),
+			noValue(), noMapValue(), camelName(), required(), requiredFalse(), requiredNonConstant(),
 			prefixedExternal(), lowerSnake(), constantEnv(), dynamic(), nameless(),
 			inverse(), singularEnv(), pgpKey(), prefixedAWS(),
+			bareNamespaceTail(), terminatedNamespaceTail(),
+			emptyName(), emptyConstName(),
+			doubleSeparator(), leadingSeparator(), trailingSeparator(),
+			kebabPair(), kebabWord(), kebabDigit(), kebabTriple(),
 		},
 	}
 }
@@ -56,6 +66,24 @@ func goodSlice() cli.Flag {
 	return &cli.StringSliceFlag{
 		Name:    "tags",
 		Sources: cli.EnvVars("MYAPP_TAGS"),
+	}
+}
+
+// goodMap omits Value for the same reason goodSlice does: a map's zero is the
+// empty map. It differs from goodSlice in exactly one place — the container —
+// so it pins that the exemption follows the reason and not a list of two.
+func goodMap() cli.Flag {
+	return &cli.StringMapFlag{
+		Name:    "labels",
+		Sources: cli.EnvVars("MYAPP_LABELS"),
+	}
+}
+
+// noMapValue proves the map exemption is the VALUE rule's alone: a map flag
+// binding nothing is still reported for the binding.
+func noMapValue() cli.Flag {
+	return &cli.StringMapFlag{ // want `must bind an environment variable`
+		Name: "annotations",
 	}
 }
 
@@ -105,14 +133,6 @@ func emptyEnvVars() cli.Flag {
 	}
 }
 
-// positional writes the literal without field keys: every field is specified
-// positionally, so "field absent" is meaningless and vet's composites check
-// owns the shape. Nothing is reported here.
-func positional() cli.Flag {
-	f := cli.StringFlag{"positional", nil, "u", "v", false, cli.ValueSourceChain{}, nil}
-	return &f
-}
-
 // chain hides the EnvVars call behind a local wrapper.
 func chain(names ...string) cli.ValueSourceChain { return cli.EnvVars(names...) }
 
@@ -129,6 +149,25 @@ func methodWrapped() cli.Flag {
 		Name:    "method-wrapped",
 		Value:   "x",
 		Sources: builder{}.chain("MYAPP_METHOD"),
+	}
+}
+
+// forger spells the framework's own binder name on a type of this package.
+// methodWrapped differs from it in exactly one place — the method's NAME — so
+// together they pin that the binding is recognised by the framework package it
+// belongs to and not by what it is called.
+type forger struct{}
+
+func (forger) EnvVars(names ...string) cli.ValueSourceChain { return cli.EnvVars(names...) }
+
+// forgedEnvVars binds through a method named EnvVars that is not the
+// framework's: writing the name acquires none of the framework's binding, so
+// the flag is reported exactly like any other that binds nothing visible.
+func forgedEnvVars() cli.Flag {
+	return &cli.StringFlag{ // want `must bind an environment variable`
+		Name:    "forged",
+		Value:   "x",
+		Sources: forger{}.EnvVars("MYAPP_FORGED"),
 	}
 }
 
@@ -167,6 +206,18 @@ func required() cli.Flag {
 		Value:    "default",
 		Sources:  cli.EnvVars("MYAPP_TENANT"),
 		Required: true, // want `must not be Required`
+	}
+}
+
+// requiredFalse is the other side of the Required boundary: the field is
+// present and its constant value is false, which is the flag not being
+// required, so nothing is reported.
+func requiredFalse() cli.Flag {
+	return &cli.StringFlag{
+		Name:     "optional",
+		Value:    "default",
+		Sources:  cli.EnvVars("MYAPP_OPTIONAL"),
+		Required: false,
 	}
 }
 
@@ -256,6 +307,97 @@ func prefixedAWS() cli.Flag {
 	}
 }
 
+// bareNamespaceTail ends in the bare namespace itself rather than a variable
+// EXTENDING it. It differs from prefixedExternal in exactly one place — the
+// final segment is PG rather than PGDATABASE — and libpq owns no variable
+// called PG, so nothing is wrapped and nothing is reported.
+func bareNamespaceTail() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "pg",
+		Value:   "x",
+		Sources: cli.EnvVars("KILROY_PG"),
+	}
+}
+
+// terminatedNamespaceTail ends in an underscore-terminated namespace's stem
+// with nothing following it. It differs from prefixedAWS in exactly one place —
+// the trailing REGION segment is gone — and AWS_ with nothing after it names no
+// variable, so nothing is wrapped and nothing is reported.
+func terminatedNamespaceTail() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "aws",
+		Value:   "x",
+		Sources: cli.EnvVars("KILROY_AWS"),
+	}
+}
+
+// emptyName declares the EMPTY name, which matches no kebab shape and names no
+// flag anyone can spell. It is a name the literal declares, unlike dynamic's.
+func emptyName() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "", // want `flag name "" must be kebab-case`
+		Value:   "x",
+		Sources: cli.EnvVars("MYAPP_EMPTY_NAME"),
+	}
+}
+
+// emptyConstName reaches the same empty name through a constant, proving the
+// judgement reads the constant VALUE and not the spelling of the expression.
+func emptyConstName() cli.Flag {
+	return &cli.StringFlag{
+		Name:    noName, // want `flag name "" must be kebab-case`
+		Value:   "x",
+		Sources: cli.EnvVars("MYAPP_EMPTY_CONST_NAME"),
+	}
+}
+
+// doubleSeparator, leadingSeparator and trailingSeparator are the violating
+// near-misses of the kebab shape, each deviating from a conforming name in
+// exactly one place: a doubled separator, a leading one, a trailing one.
+func doubleSeparator() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "a--b", // want `must be kebab-case`
+		Value:   "x",
+		Sources: cli.EnvVars("MYAPP_DOUBLE"),
+	}
+}
+
+func leadingSeparator() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "-a", // want `must be kebab-case`
+		Value:   "x",
+		Sources: cli.EnvVars("MYAPP_LEADING"),
+	}
+}
+
+func trailingSeparator() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "a-", // want `must be kebab-case`
+		Value:   "x",
+		Sources: cli.EnvVars("MYAPP_TRAILING"),
+	}
+}
+
+// kebabPair, kebabWord, kebabDigit and kebabTriple are the conforming side of
+// the same boundary: a separated pair, a bare word, a digit, and a name whose
+// middle segment is a digit. A regex loose enough to admit the four above and
+// one tight enough to reject these four are different regexes.
+func kebabPair() cli.Flag {
+	return &cli.StringFlag{Name: "a-b", Value: "x", Sources: cli.EnvVars("MYAPP_PAIR")}
+}
+
+func kebabWord() cli.Flag {
+	return &cli.StringFlag{Name: "ab", Value: "x", Sources: cli.EnvVars("MYAPP_WORD")}
+}
+
+func kebabDigit() cli.Flag {
+	return &cli.StringFlag{Name: "a1", Value: "x", Sources: cli.EnvVars("MYAPP_DIGIT")}
+}
+
+func kebabTriple() cli.Flag {
+	return &cli.StringFlag{Name: "a-1-b", Value: "x", Sources: cli.EnvVars("MYAPP_TRIPLE")}
+}
+
 // dynamic wires non-constant expressions; nothing is checkable and nothing is
 // reported beyond what the other rules see.
 func dynamic() cli.Flag {
@@ -266,19 +408,97 @@ func dynamic() cli.Flag {
 	}
 }
 
-// configureMeta overrides the framework's meta-flags. The unbound override is
-// the conformant shape — the Sources requirement is exempt there. The bound
-// ones are defects: urfave's version/help checks run before Sources apply, so
-// each binding is inert yet advertised in help output.
-func configureMeta() {
+// configureMetaClean is the conformant shape: an override that binds nothing.
+// The Sources requirement is exempt there, so nothing is reported.
+func configureMetaClean() {
 	cli.VersionFlag = &cli.BoolFlag{Name: "version", Usage: "print version information and exit"}
-	cli.VersionFlag = &cli.BoolFlag{ // want `flag "version" overrides cli.VersionFlag/cli.HelpFlag`
+}
+
+// configureMeta binds environment variables on overrides that reach the
+// framework. Each is a defect: urfave's version and help checks run before
+// Sources apply, so the binding is inert yet advertised in help output.
+func configureMeta() {
+	cli.VersionFlag = &cli.BoolFlag{ // want `flag "version" overrides a framework meta-flag`
 		Name:    "version",
 		Sources: cli.EnvVars("APP_VERSION"),
 	}
-	cli.HelpFlag = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+	cli.HelpFlag = &cli.BoolFlag{ // want `flag "help" overrides a framework meta-flag`
 		Name:    "help",
 		Sources: cli.EnvVars("APP_HELP"),
+	}
+}
+
+// configureCompletionClean overrides the third of the framework's Flag
+// variables. It differs from configureMetaClean in exactly one place — which
+// variable is written — and is exempt for the same reason: v3 triggers
+// completion on the literal argument and never reads the variable, so a
+// binding there could not work either.
+func configureCompletionClean() {
+	cli.GenerateShellCompletionFlag = &cli.BoolFlag{Name: "generate-shell-completion", Usage: "emit completions"}
+}
+
+// configureCompletionBound binds a variable on that same override, which is the
+// same inert-yet-advertised defect the version and help overrides carry.
+func configureCompletionBound() {
+	cli.GenerateShellCompletionFlag = &cli.BoolFlag{ // want `flag "generate-shell-completion" overrides a framework meta-flag`
+		Name:    "generate-shell-completion",
+		Sources: cli.EnvVars("APP_COMPLETION"),
+	}
+}
+
+// configureMetaOverwritten is the does-not-apply case written against the
+// MATCHER rather than the description: sneaky is NAMED beside a meta variable
+// and never reaches the framework, because the very next statement replaces the
+// write with nothing in between. It stays on the ordinary rules and is reported
+// like any other flag that binds nothing, while the write that does survive is
+// exempt.
+func configureMetaOverwritten() {
+	sneaky := &cli.StringFlag{ // want `must bind an environment variable`
+		Name:  "sneaky",
+		Value: "x",
+	}
+	cli.HelpFlag = sneaky
+	cli.HelpFlag = &cli.BoolFlag{Name: "help"}
+}
+
+// configureMetaInCase overwrites inside a switch case body. A case body is a
+// statement list exactly as a block is, so the replaced write installs nothing
+// there either — and a matcher that only knew about blocks would hand the
+// exemption back for the price of a switch.
+func configureMetaInCase(pick bool) {
+	switch pick {
+	case true:
+		cased := &cli.StringFlag{ // want `must bind an environment variable`
+			Name:  "cased",
+			Value: "x",
+		}
+		cli.HelpFlag = cased
+		cli.HelpFlag = &cli.BoolFlag{Name: "help"}
+	}
+}
+
+// configureMetaInSelect is the same shape in a communication clause, the third
+// place Go spells a statement list.
+func configureMetaInSelect(ch chan int) {
+	select {
+	case <-ch:
+	default:
+		selected := &cli.StringFlag{ // want `must bind an environment variable`
+			Name:  "selected",
+			Value: "x",
+		}
+		cli.HelpFlag = selected
+		cli.HelpFlag = &cli.BoolFlag{Name: "help"}
+	}
+}
+
+// configureLookalikeVar writes another package's variable that is spelled and
+// typed exactly like the framework's. Identity is the package the variable
+// belongs to, so nothing is exempt and the ordinary Sources rule is reported.
+func configureLookalikeVar() {
+	lookalike.VersionFlag = &cli.StringFlag{ // want `must bind an environment variable`
+		Name:  "lookalike-version",
+		Value: "x",
 	}
 }
 
@@ -290,7 +510,7 @@ func configureMetaIndirect() {
 	clean := &cli.BoolFlag{Name: "version", Usage: "print version information and exit"}
 	cli.VersionFlag = clean
 
-	var bound = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+	var bound = &cli.BoolFlag{ // want `flag "help" overrides a framework meta-flag`
 		Name:    "help",
 		Sources: cli.EnvVars("APP_HELP_INDIRECT"),
 	}
@@ -302,7 +522,7 @@ func configureMetaIndirect() {
 // and still resolves.
 func configureMetaDeclaredThenAssigned() {
 	var bound *cli.BoolFlag
-	bound = &cli.BoolFlag{ // want `flag "help" overrides cli.VersionFlag/cli.HelpFlag`
+	bound = &cli.BoolFlag{ // want `flag "help" overrides a framework meta-flag`
 		Name:    "help",
 		Sources: cli.EnvVars("APP_HELP_DECLARED"),
 	}
@@ -324,13 +544,32 @@ func configureMetaReassigned() {
 // ordinary (conformant here) rules even though it reaches cli.VersionFlag.
 var packageMeta = &cli.BoolFlag{Name: "release", Sources: cli.EnvVars("APP_RELEASE")}
 
-// configureMetaPackageVar assigns the unresolvable package-level variable, and
-// clears the override through non-variable right-hand sides (nil, a call),
-// none of which resolve to a literal.
+// configureMetaPackageVar assigns the unresolvable package-level variable: the
+// same-function resolution boundary refuses it, so the literal stays on the
+// ordinary rules.
 func configureMetaPackageVar() {
 	cli.VersionFlag = packageMeta
+}
+
+// configureMetaNonLiteral clears the override through right-hand sides that
+// resolve to no literal at all — an untyped nil, and a call.
+func configureMetaNonLiteral() {
 	cli.VersionFlag = nil
 	cli.HelpFlag = makeFlag()
+}
+
+// twoFlags returns both meta flags at once, so a file can write both variables
+// in one statement.
+func twoFlags() (cli.Flag, cli.Flag) { return nil, nil }
+
+// configureMetaTuple writes both meta variables from ONE call, which is the
+// shape whose left-hand side is longer than its right. Nothing resolves to a
+// literal through a call, so nothing is exempt and nothing is reported. The
+// case exists for the index guard that makes the walk survive it: no rule of
+// this analyzer mentions such a guard, and deleting either one panics here with
+// index out of range.
+func configureMetaTuple() {
+	cli.VersionFlag, cli.HelpFlag = twoFlags()
 }
 
 // makeFlag hides a literal behind a call; values flowing through calls are
@@ -359,9 +598,12 @@ func elidedElements() []*cli.StringFlag {
 // override: the ordinary rules stay in force.
 type holder struct{ flag cli.Flag }
 
-// metaLookalikes assigns through selectors that are NOT cli.VersionFlag or
-// cli.HelpFlag — a local struct field and a framework field that is no
-// meta-flag variable — so both stay on the ordinary (conformant here) rules.
+// metaLookalikes assigns through selectors that are not the framework's own
+// Flag storage — a field of THIS package typed cli.Flag, and the framework's
+// []Flag list, which is where an app's ordinary flags go. Both stay on the
+// ordinary rules, and both bind a variable here, so a matcher that lost either
+// the package test or the Flag-type test would report them as inert meta
+// bindings instead.
 func metaLookalikes(cmd *cli.Command) {
 	var h holder
 	h.flag = &cli.BoolFlag{Name: "held", Sources: cli.EnvVars("APP_HELD")}

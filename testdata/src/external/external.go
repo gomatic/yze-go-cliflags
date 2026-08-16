@@ -11,7 +11,7 @@ func Command() *cli.Command {
 	return &cli.Command{
 		Name: "external",
 		Flags: []cli.Flag{
-			vault(), prefixedVault(),
+			vault(), prefixedVault(), vaultish(),
 		},
 	}
 }
@@ -22,6 +22,20 @@ func vault() cli.Flag {
 		Name:    "vault-addr",
 		Value:   "https://vault:8200",
 		Sources: cli.EnvVars("VAULT_ADDR"),
+	}
+}
+
+// vaultish is the does-not-apply case for the added namespace, written against
+// the MATCHER and not the description: an added namespace is judged by the same
+// theory as a seeded one, so a leading segment that merely STARTS with VAULT is
+// not the registered namespace. It differs from vault() in exactly one place —
+// the leading segment is VAULTISH rather than VAULT — and no app prefix is set
+// in this fixture, so the only rule that could speak stays quiet.
+func vaultish() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "vaultish-addr",
+		Value:   "x",
+		Sources: cli.EnvVars("VAULTISH_ADDR"),
 	}
 }
 
