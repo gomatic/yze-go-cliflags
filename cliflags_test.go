@@ -76,6 +76,25 @@ func TestExternalSettingRefusalReachesTheRunner(t *testing.T) {
 	assert.ErrorIs(t, err, cliflags.ErrExternalNamespace)
 }
 
+// TestCheckMetaSourcesReportsABindingRatherThanASourcesField drives the
+// meta-flag rule over a fixture that varies one field and nothing else.
+//
+// The two tests in metaflags_test.go carry this function's name and pin what
+// UPSTREAM does — that urfave's version and completion checks run before
+// Sources apply — which is the reason the rule exists rather than the rule. The
+// reported direction is exercised from several angles in app.go; the direction
+// nothing exercised is the boundary the rule is drawn at, which is a bound
+// VARIABLE and not a populated Sources field. A meta-flag override sourced from
+// files, or from an EnvVars call naming nothing, advertises no variable in help
+// output and has nothing inert to remove, so it is silent — and it must stay
+// silent under the ordinary Sources requirement too, which the meta exemption
+// inverts rather than merely relaxes. Widening this rule to "a meta-flag
+// override carries no Sources" would pass every test that existed before this
+// one.
+func TestCheckMetaSourcesReportsABindingRatherThanASourcesField(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), cliflags.Analyzer, "metaenv")
+}
+
 // TestRegistrationIsWellFormed pins the yze wiring.
 func TestRegistrationIsWellFormed(t *testing.T) {
 	assert.NoError(t, cliflags.Registration.Validate())
